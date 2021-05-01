@@ -1,0 +1,12 @@
+diff -Naur mc-4.8.26.old/misc/mc.ext.in mc-4.8.26/misc/mc.ext.in
+--- mc-4.8.26.old/misc/mc.ext.in	2021-01-10 14:50:16.000000000 +0300
++++ mc-4.8.26/misc/mc.ext.in	2021-01-24 10:47:46.000000000 +0300
+@@ -751,7 +751,7 @@
+ 	View=%view{ascii} @EXTHELPERSDIR@/archive.sh view zip
+ 
+ # zip
+-type/i/^zip\ archive
++type/\(Zip archive
+ 	Open=%cd %p/uzip://
+ 	View=%view{ascii} @EXTHELPERSDIR@/archive.sh view zip
+ 

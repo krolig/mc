@@ -1,0 +1,61 @@
+#!/bin/bash
+
+OSV=$(echo $(sw_vers -productVersion) | sed -e 's/\([0-9]*\)\.\([0-9]*\)\(\.[0-9]*\)*/\1/')
+OSv=$(echo $(sw_vers -productVersion) | sed -e 's/\([0-9]*\)\.\([0-9]*\)\(\.[0-9]*\)*/\2/')
+
+if [ "$OSV" -ge 11 ] || [ "$OSv" -ge 15 ]; then
+  profile="zprofile"
+  bash_profile="zshenv"
+ else
+  profile="profile"
+  bash_profile="bash_profile"
+fi
+
+PROFILE="$HOME/.$profile"
+BASH_PROFILE="$HOME/.$bash_profile"
+EXPORT_PATH='export PATH=$PATH:/opt/kroleg/mc/bin'
+TP="$HOME/kroleg.terminal"
+TERM_INFO_OPT="/opt/local/share/terminfo"
+EXPORT_TERMINFO='export TERMINFO=/usr/share/terminfo'
+
+
+if ! [ -f "$PROFILE" ]; then
+ touch "$PROFILE"
+ sudo chown "$USER" $PROFILE
+fi
+
+if ! grep -q "$EXPORT_PATH" "$PROFILE"; then
+ echo -e "\n$EXPORT_PATH" >> "$PROFILE"
+fi
+
+if ! [ -f "$BASH_PROFILE" ]; then
+ touch "$BASH_PROFILE"
+ sudo chown "$USER" $BASH_PROFILE
+fi
+
+if ! grep -q "$EXPORT_PATH" "$BASH_PROFILE"; then
+ echo -e "\n$EXPORT_PATH" >> "$BASH_PROFILE"
+fi
+
+if [ ! -d "$TERM_INFO_OPT" ] && ! grep -q "$EXPORT_TERMINFO" "$PROFILE"; then
+ echo -e "\n$EXPORT_TERMINFO" >> "$PROFILE"
+fi
+
+if [ ! -d "$TERM_INFO_OPT" ] && ! grep -q "$EXPORT_TERMINFO" "$BASH_PROFILE"; then
+ echo -e "\n$EXPORT_TERMINFO" >> "$BASH_PROFILE"
+fi
+
+
+if [ -e "$TP" ]; then
+ open $TP
+
+ osascript -e 'tell application "Terminal"
+  if not (exists window 1) then reopen
+   activate
+  do script "mc" in window 1
+ end tell'
+
+ rm $TP
+fi
+
+exit 0

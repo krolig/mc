@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# DIR=$(cd $(dirname "$0"); pwd)
+
+osascript -e 'do shell script "
+ source $(find ~/ -name mc-remove.sh)
+
+ osascript <<END
+  tell applications \"System Events\" to display dialog \"Midnight Commander removed successfully\" buttons {\"OK\"} with icon caution
+ END
+
+" with administrator privileges' >/dev/null

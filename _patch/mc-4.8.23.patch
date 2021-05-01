@@ -1,0 +1,66 @@
+diff -Naur mc-4.8.23.old/doc/man/hu/Makefile.in mc-4.8.23/doc/man/hu/Makefile.in
+--- mc-4.8.23.old/doc/man/hu/Makefile.in	2019-06-22 14:44:13.000000000 +0300
++++ mc-4.8.23/doc/man/hu/Makefile.in	2019-11-25 16:36:10.000000000 +0300
+@@ -453,7 +453,7 @@
+ 	-e "s{%libexecdir%{@libexecdir@{g"
+ 
+ MAN_DATE_CMD = \
+-	LC_ALL=$(DATE_LANG) @PERL@ -MPOSIX -e '\
++	LC_ALL=$(DATE_LANG) @PERL@ -CS -MPOSIX -e '\
+ 	    @fi=lstat("'$${MAN_FILE}'"); \
+ 	    print POSIX::strftime("$(DATE_FORMAT)", localtime($$fi[9]));' 2>/dev/null
+ 
+diff -Naur mc-4.8.23.old/lib/widget/menu.c mc-4.8.23/lib/widget/menu.c
+--- mc-4.8.23.old/lib/widget/menu.c	2019-06-22 14:08:02.000000000 +0300
++++ mc-4.8.23/lib/widget/menu.c	2019-11-25 16:35:41.000000000 +0300
+@@ -46,7 +46,7 @@
+ 
+ /*** global variables ****************************************************************************/
+ 
+-const global_keymap_t *menu_map;
++const global_keymap_t *menu_map = NULL;
+ 
+ /*** file scope macro definitions ****************************************************************/
+ 
+diff -Naur mc-4.8.23.old/lib/widget/menu.h mc-4.8.23/lib/widget/menu.h
+--- mc-4.8.23.old/lib/widget/menu.h	2019-06-16 20:49:31.000000000 +0300
++++ mc-4.8.23/lib/widget/menu.h	2019-11-25 16:35:41.000000000 +0300
+@@ -38,6 +38,7 @@
+ } WMenuBar;
+ 
+ /*** global variables defined in .c file *********************************************************/
++extern const global_keymap_t *menu_map;
+ 
+ /*** declarations of public functions ************************************************************/
+ 
+diff -Naur mc-4.8.23.old/src/keybind-defaults.c mc-4.8.23/src/keybind-defaults.c
+--- mc-4.8.23.old/src/keybind-defaults.c	2019-06-16 20:49:31.000000000 +0300
++++ mc-4.8.23/src/keybind-defaults.c	2019-11-25 16:35:41.000000000 +0300
+@@ -28,7 +28,7 @@
+ #include <config.h>
+ 
+ #include "lib/global.h"
+-#include "lib/widget.h"         /* dialog_map, input_map, listbox_map */
++#include "lib/widget.h"         /* dialog_map, input_map, listbox_map, menu_map */
+ 
+ #include "keybind-defaults.h"
+ 
+@@ -56,7 +56,6 @@
+ const global_keymap_t *main_map = NULL;
+ const global_keymap_t *main_x_map = NULL;
+ const global_keymap_t *panel_map = NULL;
+-const global_keymap_t *menu_map = NULL;
+ const global_keymap_t *tree_map = NULL;
+ const global_keymap_t *help_map = NULL;
+ 
+diff -Naur mc-4.8.23.old/src/keybind-defaults.h mc-4.8.23/src/keybind-defaults.h
+--- mc-4.8.23.old/src/keybind-defaults.h	2019-06-16 20:49:31.000000000 +0300
++++ mc-4.8.23/src/keybind-defaults.h	2019-11-25 16:35:41.000000000 +0300
+@@ -35,7 +35,6 @@
+ extern const global_keymap_t *main_map;
+ extern const global_keymap_t *main_x_map;
+ extern const global_keymap_t *panel_map;
+-extern const global_keymap_t *menu_map;
+ extern const global_keymap_t *tree_map;
+ extern const global_keymap_t *help_map;
+ 

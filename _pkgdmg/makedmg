@@ -1,0 +1,117 @@
+#!/bin/sh
+
+#   ⃝ Kroleg, 2016
+
+# DMG
+UNINSTALL_APP="Uninstall-mc.app"
+DEST_DMG="$HOME/DevPkg/dmg"
+DEST_ADDONS="tmpaddons"
+TMP_DIR="tmpfolder"
+RES="_resources"
+ICON_SOURCE="$RES/mc.png"
+ICON_SIZE=48
+ICON_DESTINATION="$TMP_DIR/$APP.pkg"
+BG_IMAGE="backgroundImage.tiff"
+DMG="$APP.dmg"
+RSRC="/tmp/icon.rsrc"
+PKG_IDENTIFIER="org.kroleg.mc"
+
+############## make pkg ##############
+pkgbuild \
+--identifier "$PKG_IDENTIFIER" \
+--root "$DEST_DIR" \
+--scripts "_scripts" \
+--version 1.0 \
+mc.pkg
+# "$APP.pkg"
+
+mkdir -p "$DEST_ADDONS/xd" "$DEST_ADDONS/xm" "$DEST_ADDONS/tp" "$DEST_ADDONS/keymap" "$DEST_ADDONS/ini" "$DEST_ADDONS/menu" "$DEST_ADDONS/ext" 
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.Xdefaults "$DEST_ADDONS/xd"
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.Xmodmap "$DEST_ADDONS/xm"
+cp /Volumes/storage/MacSoft/Utilites/Terminal/kroleg.terminal "$DEST_ADDONS/tp"
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.config/mc/mc.keymap "$DEST_ADDONS/keymap"
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.config/mc/ini "$DEST_ADDONS/ini"
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.config/mc/menu "$DEST_ADDONS/menu"
+cp /Volumes/storage/MacSoft/Homemac/Users/kroleg/.config/mc/mc.ext "$DEST_ADDONS/ext"
+
+pkgbuild --identifier "$PKG_IDENTIFIER".xd --root "$DEST_ADDONS/xd" --ownership preserve --version 1.0 --install-location ~ xd.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".xm --root "$DEST_ADDONS/xm" --ownership preserve --version 1.0 --install-location ~ xm.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".tp --root "$DEST_ADDONS/tp" --ownership preserve --version 1.0 --install-location ~ tp.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".keymap --root "$DEST_ADDONS/keymap" --ownership preserve --version 1.0 --install-location ~/.config/mc keymap.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".ini --root "$DEST_ADDONS/ini" --ownership preserve --version 1.0 --install-location ~/.config/mc ini.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".menu --root "$DEST_ADDONS/menu" --ownership preserve --version 1.0 --install-location ~/.config/mc menu.pkg
+pkgbuild --identifier "$PKG_IDENTIFIER".ext --root "$DEST_ADDONS/ext" --ownership preserve --version 1.0 --install-location ~/.config/mc ext.pkg
+productbuild --distribution ./_pkgdmg/distribution.xml "$APP.pkg"
+
+rm -f mc.pkg xd.pkg xm.pkg tp.pkg keymap.pkg ini.pkg menu.pkg ext.pkg
+
+mkdir "$TMP_DIR"
+mv "$APP.pkg" "$TMP_DIR"
+
+############## set pkg icon ##############
+# set -e
+
+sips -i $ICON_SOURCE
+DeRez -only icns $ICON_SOURCE > $RSRC
+SetFile -a C $ICON_DESTINATION
+
+if [ -f $ICON_DESTINATION ]; then
+    Rez -append $RSRC -o $ICON_DESTINATION
+elif [ -d $ICON_DESTINATION ]; then
+    touch $ICON_DESTINATION/$'Icon\r'
+    Rez -append $RSRC -o $ICON_DESTINATION/Icon?
+    SetFile -a V $ICON_DESTINATION/Icon?
+fi
+
+rm $RSRC
+
+cp -r "$RES/$UNINSTALL_APP" "$RES/.background" "$TMP_DIR"
+
+############## make dmg ##############
+
+TMP_DMG="$(mktemp -u -t XXXXXXX)"
+trap 'RESULT=$?; rm -f "$TMP_DMG"; exit $RESULT' INT QUIT TERM EXIT
+hdiutil create -srcfolder "$TMP_DIR" -volname "$APP" -fs HFS+ \
+               -fsargs "-c c=64,a=16,e=16" -format UDRW "$TMP_DMG"
+TMP_DMG="${TMP_DMG}.dmg"
+DEVICE="$(hdiutil attach -readwrite -noautoopen "$TMP_DMG" | awk 'NR==1{print$1}')"
+VOLUME="$(mount | grep "$DEVICE" | sed 's/^[^ ]* on //;s/ ([^)]*)$//')"
+
+
+# get the dimensions of the main window
+WHS=$(system_profiler SPDisplaysDataType | awk '/Main Display: Yes/{found=1} /Resolution/{width=$2; height=$4} /Retina/{scale=($2 == "Yes" ? 2 : 1)} /^ {8}[^ ]+/{if(found) {exit}; scale=1} END{printf "%d %d %d\\n", width, height, scale}')
+
+echo "
+set {width, height, scale} to words of \""$WHS"\"
+set x to ((width / 4) / scale)
+set y to ((height / 3.5) / scale)
+set background to alias (\"Volumes:\" & \""$APP"\" & \":.background:\" & \""$BG_IMAGE"\")
+
+tell application \"Finder\"
+    tell disk (\""$APP"\")
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set the bounds of container window to {x, y, (x + 600), (y + 360)}
+        set theViewOptions to the icon view options of container window
+        set arrangement of theViewOptions to not arranged
+        set icon size of theViewOptions to \""$ICON_SIZE"\"
+        set label position of theViewOptions to bottom
+        set background picture of theViewOptions to background
+        set position of item (\""$APP"\" & \".pkg\") of container window to {200, 175}
+        set position of item (\""$UNINSTALL_APP"\") of container window to {380, 175}
+        update without registering applications
+        close
+    end tell
+end tell
+
+" | osascript
+
+hdiutil detach "$DEVICE"
+hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+
+rm -Rf "$TMP_DIR" "$DEST_ADDONS"
+mv "$DMG" "$DEST_DMG" 
+
+######################################

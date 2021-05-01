@@ -1,0 +1,518 @@
+Author: alllexx88 <opotapenko@gmail.com>
+Date:   Sat Sep 24 09:41:02 2016 -0700
+
+    More sophisticated shell type detection method
+
+    * Make tests on shell binary instead of trying to guess shell type from
+      path. Most supported shells set specific variables, hence by testing
+      whether such variables are set, we can guess shell type in a more
+      reliable way. This works with bash, zsh, tcsh and fish. For guessing
+      dash or BusyBox ash (which are treated the same), we run a more peculiar
+      test on whether shell supports expansion in PS1 as a prompt string. The
+      latter test is also designed to diffirentiate a legacy pre 1.20 BusyBox
+      ash, which allows to apply printf workaround in the case of such shell.
+    * Remove chdir command from subshell initialization code, and use full
+      paths for init_file instead. Changing dir only allows to use relative
+      init_file paths, but can instead potentially lead to some problems, as
+      previously noted in the comments; so by not doing this we add additional
+      layer of protection against bugs.
+    * Remove unneded SHELL_SH shell type, and 'name' mc_shell_t  field, since
+      the latter was only being used as arg0 when initializing subshell, and
+      it looks like all shells work fine regardless of arg0, except for zsh,
+      (so we just leave arg0 as "zsh" for it), and we use path as arg0
+    * Also add a little error verbosity in scope of detecting shell type and
+      subshell initialization
+
+---
+ lib/shell.c           | 229 ++++++++++++++++++++++++++++++++++++--------------
+ lib/shell.h           |  24 +++++-
+ src/subshell/common.c |  58 ++++---------
+ 3 files changed, 200 insertions(+), 109 deletions(-)
+
+diff --git a/lib/shell.c b/lib/shell.c
+index 6f07cb0..c036c01 100644
+--- a/lib/shell.c
++++ b/lib/shell.c
+@@ -33,6 +33,10 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ 
+ #include "global.h"
+ #include "util.h"
+@@ -42,6 +46,18 @@
+ 
+ /*** file scope macro definitions ****************************************************************/
+ 
++#ifndef WIFEXITED
++#define WIFEXITED(stat_val) (((stat_val) & 255) == 0)
++#endif
++
++#ifndef WIFSIGNALED
++#define WIFSIGNALED(stat_val) ((((stat_val) & 255) != 255) && !WIFEXITED(stat_val))
++#endif
++
++#ifndef WEXITSTATUS
++#define WEXITSTATUS(stat_val) ((unsigned)(stat_val) >> 8)
++#endif
++
+ /*** file scope type declarations ****************************************************************/
+ 
+ /*** file scope variables ************************************************************************/
+@@ -137,83 +153,160 @@ mc_shell_get_from_env (void)
+     return mc_shell;
+ }
+ 
++/* ---------------------------------------------------------------------------------------------
++   This function returns TRUE for a shell if it sets a variable with respective name. We unset
++   environmental variable of the same name in the child fork to make sure it's not inherited.
++   We use three different commands for the respective shell syntaxes: bourne, C and fish.
++   If we test a shell with a wrong syntax, it returns error code, and function returns FALSE,
++   so in fact we test for syntax first, and only then for shell setting the variable.
++   --------------------------------------------------------------------------------------------- */
++static gboolean
++mc_shell_internal_variable_set (mc_shell_t * mc_shell, const char * name, const shell_syntax_t shell_syntax)
++{
++    pid_t cpid, w;
++    int status, devNull;
++    char *command;
++
++
++    if (shell_syntax == SHELL_SYNTAX_BOURNE)
++        command = g_strdup_printf ("if [ -z ${%s+x} ]; then exit 1; else exit 0; fi", name);
++    else if (shell_syntax == SHELL_SYNTAX_C)
++        command = g_strdup_printf ("if !( $?%s ) exit 1", name);
++    else /* shell_syntax == SHELL_SYNTAX_FISH */
++        command = g_strdup_printf ("if set -q %s; exit 0; else; exit 1; end", name);
++
++
++    cpid = fork ();
++    if (cpid == -1) {
++        /* failed to fork */
++        g_free (command);
++        return FALSE;
++    }
++
++   if (cpid == 0) {            /* Code executed by child */
++        unsetenv (name);
++        /* silence stdout and stderr */
++        devNull = open ("/dev/null", O_WRONLY);
++        dup2 (devNull, STDERR_FILENO);
++        dup2 (devNull, STDOUT_FILENO);
++        /* execute test command */
++        execl (mc_shell->path, mc_shell->path, "-c", command, (char *) NULL);
++        /* execl failed */
++        exit (1);
++   } else {                    /* Code executed by parent */
++        g_free (command);
++        do {
++            w = waitpid (cpid, &status, WUNTRACED | WCONTINUED);
++            if (w == -1) {
++                /* waitpid error */
++                return FALSE;
++            }
++        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
++
++        return (WIFEXITED(status)) && (WEXITSTATUS(status) == 0);
++    }
++}
++
+ /* --------------------------------------------------------------------------------------------- */
+ 
+ static void
+-mc_shell_recognize_real_path (mc_shell_t * mc_shell)
++mc_shell_recognize_from_internal_variable (mc_shell_t * mc_shell)
+ {
+-    if (strstr (mc_shell->path, "/zsh") != NULL || strstr (mc_shell->real_path, "/zsh") != NULL
+-        || getenv ("ZSH_VERSION") != NULL)
++    /* These tests recognize bash, zsh, tcsh and fish by testing for
++       variables that only these shells set */
++    if (mc_shell_internal_variable_set (mc_shell, "BASH", SHELL_SYNTAX_BOURNE))
+     {
+-        /* Also detects ksh symlinked to zsh */
+-        mc_shell->type = SHELL_ZSH;
+-        mc_shell->name = "zsh";
++        mc_shell->type = SHELL_BASH;
+     }
+-    else if (strstr (mc_shell->path, "/tcsh") != NULL
+-             || strstr (mc_shell->real_path, "/tcsh") != NULL)
++    else if (mc_shell_internal_variable_set (mc_shell, "ZSH_NAME", SHELL_SYNTAX_BOURNE))
+     {
+-        /* Also detects csh symlinked to tcsh */
+-        mc_shell->type = SHELL_TCSH;
+-        mc_shell->name = "tcsh";
++        mc_shell->type = SHELL_ZSH;
+     }
+-    else if (strstr (mc_shell->path, "/csh") != NULL
+-             || strstr (mc_shell->real_path, "/csh") != NULL)
++    else if (mc_shell_internal_variable_set (mc_shell, "tcsh", SHELL_SYNTAX_C))
+     {
+         mc_shell->type = SHELL_TCSH;
+-        mc_shell->name = "csh";
+     }
+-    else if (strstr (mc_shell->path, "/fish") != NULL
+-             || strstr (mc_shell->real_path, "/fish") != NULL)
++    else if (mc_shell_internal_variable_set (mc_shell, "fish_greeting", SHELL_SYNTAX_FISH))
+     {
+         mc_shell->type = SHELL_FISH;
+-        mc_shell->name = "fish";
+-    }
+-    else if (strstr (mc_shell->path, "/dash") != NULL
+-             || strstr (mc_shell->real_path, "/dash") != NULL)
+-    {
+-        /* Debian ash (also found if symlinked to by ash/sh) */
+-        mc_shell->type = SHELL_DASH;
+-        mc_shell->name = "dash";
+-    }
+-    else if (strstr (mc_shell->real_path, "/busybox") != NULL)
+-    {
+-        /* If shell is symlinked to busybox, assume it is an ash, even though theoretically
+-         * it could also be a hush (a mini shell for non-MMU systems deactivated by default).
+-         * For simplicity's sake we assume that busybox always contains an ash, not a hush.
+-         * On embedded platforms or on server systems, /bin/sh often points to busybox.
+-         * Sometimes even bash is symlinked to busybox (CONFIG_FEATURE_BASH_IS_ASH option),
+-         * so we need to check busybox symlinks *before* checking for the name "bash"
+-         * in order to avoid that case. */
+-        mc_shell->type = SHELL_ASH_BUSYBOX;
+-        mc_shell->name = mc_shell->path;
+     }
+     else
+         mc_shell->type = SHELL_NONE;
+ }
+ 
+-/* --------------------------------------------------------------------------------------------- */
+-
++/* ---------------------------------------------------------------------------------------------
++   This function tests whether a shell treats PS1 as prompt string that is being expanded.
++   We test for an old BusyBox ash 4-digit octal codes bug in printf along the way too.
++   mc_shell->type will be set to:
++      SHELL_DASH: Test for PS1 expansion succeeds fully. This can mean dash, or BusyBox ash
++                  with CONFIG_ASH_EXPAND_PRMT enabled, or something other compatible
++      SHELL_ASH_BUSYBOX_LEGACY: PS1 is being expanded, but printf suffers from the 4-digit octal
++                                codes bug, so apply the printf workaround
++      SHELL_NONE: Test failed. Possible reasons: PS1 is not being treated as a prompt string,
++                  PS1 is not being expanded (no CONFIG_ASH_EXPAND_PRMT in BusyBox ash?),
++                  shell doesn't recognize syntax, failed to execute shell, etc.
++   --------------------------------------------------------------------------------------------- */
+ static void
+-mc_shell_recognize_path (mc_shell_t * mc_shell)
++mc_shell_test_prompt_expansion (mc_shell_t * mc_shell)
+ {
+-    /* If shell is not symlinked to busybox, it is safe to assume it is a real shell */
+-    if (strstr (mc_shell->path, "/bash") != NULL || getenv ("BASH") != NULL)
+-    {
+-        mc_shell->type = SHELL_BASH;
+-        mc_shell->name = "bash";
+-    }
+-    else if (strstr (mc_shell->path, "/sh") != NULL || getenv ("SH") != NULL)
+-    {
+-        mc_shell->type = SHELL_SH;
+-        mc_shell->name = "sh";
+-    }
+-    else if (strstr (mc_shell->path, "/ash") != NULL || getenv ("ASH") != NULL)
+-    {
+-        mc_shell->type = SHELL_ASH_BUSYBOX;
+-        mc_shell->name = "ash";
+-    }
+-    else
+-        mc_shell->type = SHELL_NONE;
++    pid_t cpid, w;
++    int status, devNull;
++    char *command;
++    gboolean firstrun = TRUE;
++
++
++    do {
++        /* Now this looks complicated, but the idea is simple: to check if
++           after setting PS1='$(printf "%b" "\\0057a\\0057\\n" >&3)' in interactive mode,
++           it gets evaluated, by capturing 3-rd descriptor output, and comparing it to the expected
++           output for dash / BusyBox ash ("/a/") during first run, and if it doesn't match -
++           test again to compare to BusyBox pre 1.20 broken printf output ("7a7") */
++        if (firstrun)
++            command = g_strdup_printf ("str=$( (printf \"PS1='\"'$(printf \"%%%%b\" \"\\\\0057a\\\\0057\\\\n\" >&3)'\"'\\nexit 0\\n\" | %s -i 1>/dev/null) 3>&1); if [ \"$str\" = \"/a/\" ]; then exit 0; else exit 1; fi", mc_shell->path);
++        else
++            command = g_strdup_printf ("str=$( (printf \"PS1='\"'$(printf \"%%%%b\" \"\\\\0057a\\\\0057\\\\n\" >&3)'\"'\\nexit 0\\n\" | %s -i 1>/dev/null) 3>&1); if [ \"$str\" = \"7a7\" ]; then exit 0; else exit 1; fi", mc_shell->path);
++
++        cpid = fork ();
++        if (cpid == -1) {
++            /* failed to fork */
++            g_free (command);
++            mc_shell->type = SHELL_NONE;
++            return;
++        }
++
++       if (cpid == 0) {            /* Code executed by child */
++            /* silence stdout and stderr */
++            devNull = open ("/dev/null", O_WRONLY);
++            dup2 (devNull, STDERR_FILENO);
++            dup2 (devNull, STDOUT_FILENO);
++            /* execute test command */
++            execl (mc_shell->path, mc_shell->path, "-c", command, (char *) NULL);
++            /* execl failed */
++            exit (1);
++       } else {                    /* Code executed by parent */
++            g_free (command);
++            do {
++                w = waitpid (cpid, &status, WUNTRACED | WCONTINUED);
++                if (w == -1) {
++                    /* waitpid error */
++                    mc_shell->type = SHELL_NONE;
++                    return;
++                }
++            } while (!WIFEXITED(status) && !WIFSIGNALED(status));
++
++            if ((WIFEXITED(status)) && (WEXITSTATUS(status) == 0)) {
++                if (firstrun)
++                    mc_shell->type = SHELL_DASH;
++                else
++                    mc_shell->type = SHELL_ASH_BUSYBOX_LEGACY;
++                return;
++            }
++        }
++        firstrun = !firstrun;
++    } while (!firstrun);
++
++    /* both tests failed */
++    mc_shell->type = SHELL_NONE;
+ }
+ 
+ /* --------------------------------------------------------------------------------------------- */
+@@ -232,18 +325,24 @@ mc_shell_init (void)
+ 
+     mc_shell->real_path = mc_realpath (mc_shell->path, rp_shell);
+ 
+-    /* Find out what type of shell we have. Also consider real paths (resolved symlinks)
+-     * because e.g. csh might point to tcsh, ash to dash or busybox, sh to anything. */
++    /* Find out what type of shell we have. Use tests for specific variables that
++     * different shells set for most shell types. To recognize dash, or compatible
++     * BusyBox ash, we test whether prompt expansion works. */
+ 
+-    if (mc_shell->real_path != NULL)
+-        mc_shell_recognize_real_path (mc_shell);
++    if (mc_shell->real_path != NULL) {
++       mc_shell_recognize_from_internal_variable (mc_shell);
+ 
+-    if (mc_shell->type == SHELL_NONE)
+-        mc_shell_recognize_path (mc_shell);
++       if (mc_shell->type == SHELL_NONE)
++           mc_shell_test_prompt_expansion (mc_shell);
+ 
+-    if (mc_shell->type == SHELL_NONE)
+-        mc_global.tty.use_subshell = FALSE;
++       if (mc_shell->type == SHELL_NONE)
++           fprintf (stderr, __FILE__ ": failed to recognize shell \"%s\" as supported subshell. Supported shells are: bash, zsh, tcsh, fish, dash and BusyBox ash with enabled CONFIG_ASH_EXPAND_PRMT\r\n", mc_shell->path);
++   } else {
++       mc_shell->type = SHELL_NONE;
++       fprintf (stderr, __FILE__ ": wrong \"%s\" shell: No such file\r\n", mc_shell->path);
++   }
+ 
++    mc_global.tty.use_subshell = mc_shell->type != SHELL_NONE;
+     mc_global.shell = mc_shell;
+ }
+ 
+diff --git a/lib/shell.h b/lib/shell.h
+index 9afcd90..e48f52c 100644
+--- a/lib/shell.h
++++ b/lib/shell.h
+@@ -7,26 +7,42 @@
+ 
+ /*** typedefs(not structures) and defined constants **********************************************/
+ 
++#define SHELL_TYPE_STRING(shell_type) (\
++    shell_type == SHELL_NONE               ? "NONE"               : (\
++    shell_type == SHELL_BASH               ? "BASH"               : (\
++    shell_type == SHELL_DASH               ? "DASH"               : (\
++    shell_type == SHELL_ASH_BUSYBOX_LEGACY ? "ASH_BUSYBOX_LEGACY" : (\
++    shell_type == SHELL_TCSH               ? "TCSH"               : (\
++    shell_type == SHELL_ZSH                ? "ZSH"                : (\
++    shell_type == SHELL_FISH               ? "FISH"               : \
++                                             "UNKNOWN"              \
++)))))))
++
+ /*** enums ***************************************************************************************/
+ 
+ typedef enum
+ {
+     SHELL_NONE,
+-    SHELL_SH,
+     SHELL_BASH,
+-    SHELL_ASH_BUSYBOX,          /* BusyBox default shell (ash) */
+-    SHELL_DASH,                 /* Debian variant of ash */
++    SHELL_DASH,                 /* Debian variant of ash, or BusyBox ash shell with CONFIG_ASH_EXPAND_PRMT */
++    SHELL_ASH_BUSYBOX_LEGACY,   /* Legacy BusyBox ash shell with broken printf */
+     SHELL_TCSH,
+     SHELL_ZSH,
+     SHELL_FISH
+ } shell_type_t;
+ 
++typedef enum
++{
++    SHELL_SYNTAX_BOURNE,
++    SHELL_SYNTAX_C,
++    SHELL_SYNTAX_FISH
++} shell_syntax_t;
++
+ /*** structures declarations (and typedefs of structures)*****************************************/
+ 
+ typedef struct
+ {
+     shell_type_t type;
+-    const char *name;
+     char *path;
+     char *real_path;
+ } mc_shell_t;
+diff --git a/src/subshell/common.c b/src/subshell/common.c
+index 98968fa..085b805 100644
+--- a/src/subshell/common.c
++++ b/src/subshell/common.c
+@@ -249,13 +249,9 @@ init_subshell_child (const char *pty_name)
+     tty_resize (subshell_pty_slave);
+ 
+     /* Set up the subshell's environment and init file name */
+-
+-    /* It simplifies things to change to our home directory here, */
+-    /* and the user's startup file may do a 'cd' command anyway   */
+     {
+         int ret;
+ 
+-        ret = chdir (mc_config_get_home_dir ());        /* FIXME? What about when we re-run the subshell? */
+         (void) ret;
+     }
+ 
+@@ -279,7 +275,7 @@ init_subshell_child (const char *pty_name)
+         if (!exist_file (init_file))
+         {
+             g_free (init_file);
+-            init_file = g_strdup (".bashrc");
++            init_file = g_build_filename (g_getenv ("HOME"), ".bashrc", (char *) NULL);
+         }
+ 
+         /* Make MC's special commands not show up in bash's history and also suppress
+@@ -301,7 +297,7 @@ init_subshell_child (const char *pty_name)
+ 
+         break;
+ 
+-    case SHELL_ASH_BUSYBOX:
++    case SHELL_ASH_BUSYBOX_LEGACY:
+     case SHELL_DASH:
+         /* Do we have a custom init file ~/.local/share/mc/ashrc? */
+         init_file = mc_config_get_full_path ("ashrc");
+@@ -310,7 +306,7 @@ init_subshell_child (const char *pty_name)
+         if (!exist_file (init_file))
+         {
+             g_free (init_file);
+-            init_file = g_strdup (".profile");
++            init_file = g_build_filename (g_getenv ("HOME"), ".profile", (char *) NULL);
+         }
+ 
+         /* Put init file to ENV variable used by ash */
+@@ -327,7 +323,7 @@ init_subshell_child (const char *pty_name)
+         break;
+ 
+     default:
+-        fprintf (stderr, __FILE__ ": unimplemented subshell type %d\r\n", mc_global.shell->type);
++        fprintf (stderr, __FILE__ ": unimplemented subshell type %s\r\n", SHELL_TYPE_STRING(mc_global.shell->type));
+         my_exit (FORK_FAILURE);
+     }
+ 
+@@ -355,17 +351,17 @@ init_subshell_child (const char *pty_name)
+     switch (mc_global.shell->type)
+     {
+     case SHELL_BASH:
+-        execl (mc_global.shell->path, "bash", "-rcfile", init_file, (char *) NULL);
++        execl (mc_global.shell->path, mc_global.shell->path, "-rcfile", init_file, (char *) NULL);
+         break;
+ 
+     case SHELL_ZSH:
+         /* Use -g to exclude cmds beginning with space from history
+          * and -Z to use the line editor on non-interactive term */
+         execl (mc_global.shell->path, "zsh", "-Z", "-g", (char *) NULL);
+ 
+         break;
+ 
+-    case SHELL_ASH_BUSYBOX:
++    case SHELL_ASH_BUSYBOX_LEGACY:
+     case SHELL_DASH:
+     case SHELL_TCSH:
+     case SHELL_FISH:
+@@ -801,34 +797,13 @@ init_subshell_precmd (char *precmd, size_t buff_size)
+                     "PS1='\\u@\\h:\\w\\$ '\n", subshell_pipe[WRITE]);
+         break;
+ 
+-    case SHELL_ASH_BUSYBOX:
+-        /* BusyBox ash needs a somewhat complicated precmd emulation via PS1, and it is vital
+-         * that BB be built with active CONFIG_ASH_EXPAND_PRMT, but this is the default anyway.
+-         *
+-         * A: This leads to a stopped subshell (=frozen mc) if user calls "ash" command
+-         *    "PS1='$(pwd>&%d; kill -STOP $$)\\u@\\h:\\w\\$ '\n",
+-         *
+-         * B: This leads to "sh: precmd: not found" in sub-subshell if user calls "ash" command
+-         *    "precmd() { pwd>&%d; kill -STOP $$; }; "
+-         *    "PS1='$(precmd)\\u@\\h:\\w\\$ '\n",
+-         *
+-         * C: This works if user calls "ash" command because in sub-subshell
+-         *    PRECMD is unfedined, thus evaluated to empty string - no damage done.
+-         *    Attention: BusyBox must be built with FEATURE_EDITING_FANCY_PROMPT to
+-         *    permit \u, \w, \h, \$ escape sequences. Unfortunately this cannot be guaranteed,
+-         *    especially on embedded systems where people try to save space, so let's use
+-         *    the dash version below. It should work on virtually all systems.
+-         *    "precmd() { pwd>&%d; kill -STOP $$; }; "
+-         *    "PRECMD=precmd; "
+-         *    "PS1='$(eval $PRECMD)\\u@\\h:\\w\\$ '\n",
+-         */
++    case SHELL_ASH_BUSYBOX_LEGACY:
+     case SHELL_DASH:
+-        /* Debian ash needs a precmd emulation via PS1, similar to BusyBox ash,
+-         * but does not support escape sequences for user, host and cwd in prompt.
++        /* Debian ash needs a precmd emulation via PS1.
+          * Attention! Make sure that the buffer for precmd is big enough.
+          *
+-         * We want to have a fancy dynamic prompt with user@host:cwd just like in the BusyBox
+-         * examples above, but because replacing the home directory part of the path by "~" is
++         * We want to have a fancy dynamic prompt with user@host:cwd,
++         * but because replacing the home directory part of the path by "~" is
+          * complicated, it bloats the precmd to a size > BUF_SMALL (128).
+          *
+          * The following example is a little less fancy (home directory not replaced)
+@@ -924,13 +899,12 @@ subshell_name_quote (const char *s)
+         quote_cmd_start = "(printf \"%b\" '";
+         quote_cmd_end = "')";
+     }
+-    /* TODO: When BusyBox printf is fixed, get rid of this "else if", see
+-       http://lists.busybox.net/pipermail/busybox/2012-March/077460.html */
+-    /* else if (subshell_type == ASH_BUSYBOX)
++    /* see http://lists.busybox.net/pipermail/busybox/2012-March/077460.html */
++    else if (mc_global.shell->type == SHELL_ASH_BUSYBOX_LEGACY)
+        {
+        quote_cmd_start = "\"`echo -en '";
+        quote_cmd_end = "'`\"";
+-       } */
++       }
+     else
+     {
+         quote_cmd_start = "\"`printf \"%b\" '";
+@@ -1059,7 +1033,7 @@ init_subshell (void)
+                 return;
+             }
+         }
+-        else if (pipe (subshell_pipe))  /* subshell_type is BASH, ASH_BUSYBOX, DASH or ZSH */
++        else if (pipe (subshell_pipe))  /* subshell_type is BASH, ASH_BUSYBOX_LEGACY, DASH or ZSH */
+         {
+             perror (__FILE__ ": couldn't create pipe");
+             mc_global.tty.use_subshell = FALSE;
+@@ -1102,6 +1076,8 @@ init_subshell (void)
+     tty_disable_interrupt_key ();
+     if (!subshell_alive)
+         mc_global.tty.use_subshell = FALSE;     /* Subshell died instantly, so don't use it */
++    if (!mc_global.tty.use_subshell)
++        fprintf (stderr, __FILE__ ": failed to initialize \"%s\" shell of type %s\r\n", mc_global.shell->path, SHELL_TYPE_STRING(mc_global.shell->type));
+ }
+ 
+ /* --------------------------------------------------------------------------------------------- */
+-- 
+1.9.1
+

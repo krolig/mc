@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>GNU Midnight Commander</title>
+    <choices-outline>
+            <line choice="org.kroleg.mc" />
+            <line choice="org.kroleg.mc.xd" />
+            <line choice="org.kroleg.mc.xm" />
+            <line choice="org.kroleg.mc.tp" />
+            <line choice="org.kroleg.mc.keymap" />
+            <line choice="org.kroleg.mc.ini" />
+            <line choice="org.kroleg.mc.menu" />
+            <line choice="org.kroleg.mc.ext" />
+    </choices-outline>
+
+
+    <choice id="org.kroleg.mc" enabled="false" start_selected="true" title="Midnight Commander" description="File manager.">
+        <pkg-ref id="org.kroleg.mc" />
+    </choice>
+
+    <choice id="org.kroleg.mc.xd" start_selected="false" title="Xdefaults for xterm" description="Font settings, color settings for xterm.">
+        <pkg-ref id="org.kroleg.mc.xd" />
+    </choice>
+
+    <choice id="org.kroleg.mc.xm" start_selected="false" title="Xmodmap for Insert key (xterm)" description="Remap keyboard for Insert key (keycode 113 = Insert). Free F13 key, please.">
+        <pkg-ref id="org.kroleg.mc.xm" />
+    </choice>
+
+    <choice id="org.kroleg.mc.tp" start_selected="false" title='Terminal theme "kroleg"' description="Custom theme for Terminal.app.">
+        <pkg-ref id="org.kroleg.mc.tp" />
+    </choice>
+
+    <choice id="org.kroleg.mc.keymap" start_selected="false" title='Keymap file for Midnight Commander' description="Need for insert key">
+        <pkg-ref id="org.kroleg.mc.keymap" />
+    </choice>
+
+    <choice id="org.kroleg.mc.ini" start_selected="false" title='INI file for Midnight Commander' description="Need for insert key">
+        <pkg-ref id="org.kroleg.mc.ini" />
+    </choice>
+
+    <choice id="org.kroleg.mc.menu" start_selected="false" title='Menu file for Midnight Commander' description="F2 -> select. (Pack/Unpack, run video/audio, etc).">
+        <pkg-ref id="org.kroleg.mc.menu" />
+    </choice>
+
+    <choice id="org.kroleg.mc.ext" start_selected="false" title='Extension file for Midnight Commander' description="For run other files from MC. Require: port install xpdf xpdf-cyrillic pdftotext.dmg wv links antiword rtfreader djvulibre djvu2pdf xlsx2csv poppler">
+        <pkg-ref id="org.kroleg.mc.ext" />
+    </choice>
+
+
+    <pkg-ref id="org.kroleg.mc" auth="root">mc.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.xd">xd.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.xm">xm.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.tp">tp.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.keymap">keymap.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.ini">ini.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.menu">menu.pkg</pkg-ref>
+    <pkg-ref id="org.kroleg.mc.ext">ext.pkg</pkg-ref>
+    
+</installer-gui-script>
